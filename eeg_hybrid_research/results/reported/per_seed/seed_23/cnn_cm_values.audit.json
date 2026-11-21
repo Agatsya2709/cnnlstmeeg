@@ -1,0 +1,13 @@
+{
+  "model": "cnn",
+  "confusion_matrix": [
+    [
+      6,
+      3
+    ],
+    [
+      1,
+      8
+    ]
+  ]
+}

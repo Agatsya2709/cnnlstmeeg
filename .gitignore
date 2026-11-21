@@ -1,64 +1,31 @@
-# Byte-compiled / optimized / DLL files
+# Python and editor artifacts
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
 .pytest_cache/
-
-# Virtual environments
+.mypy_cache/
+.venv/
 venv/
-ENV/
 env/
-
-# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Project specific
+# Data are downloaded or generated locally; do not publish participant recordings.
+eeg_hybrid_research/data/raw_edf/
+eeg_hybrid_research/data/processed/
+!eeg_hybrid_research/data/dataset_meta.json
+!eeg_hybrid_research/data/channel_names.csv
+
+# Training artifacts. The small, audited CSV/JSON evidence under results/reported is retained.
+eeg_hybrid_research/results/**
+!eeg_hybrid_research/results/reported/
+!eeg_hybrid_research/results/reported/**
 *.pt
 *.pth
+*.ckpt
+events.out.tfevents.*
+
+# Local publication and archive exports
 *.zip
-results/
-*.csv
-*.json
-.foo/
-test_write.txt
+*.pdf

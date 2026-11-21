@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -10,13 +11,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 from sklearn.model_selection import StratifiedShuffleSplit
 from torch.utils.data import DataLoader, Dataset
 
-from models import CNNBaseline, HybridCNNLSTMGNN, LSTMBaseline
+from models import CNNBaseline, CNNLSTMBaseline, CompactCNNGAT, GraphEnhancedCNNGAT, HybridCNNLSTMGCN, HybridCNNLSTMGAT, LSTMBaseline
 from models.graph_utils import (
     build_correlation_graph,
     build_distance_graph,
@@ -44,6 +46,27 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
+
+
+def set_plot_style():
+    sns.set_theme(style="whitegrid", context="paper")
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Serif",
+            "axes.titlesize": 16,
+            "axes.labelsize": 13,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 11,
+            "figure.dpi": 150,
+        }
+    )
 
 
 def load_csv_dataset(data_dir: Path):
@@ -62,6 +85,38 @@ def load_csv_dataset(data_dir: Path):
     y_train = y_train.astype(np.int64)
     y_test = y_test.astype(np.int64)
     return x_train, y_train, x_test, y_test
+
+
+def _row_hashes(arr: np.ndarray):
+    return [hashlib.sha1(np.ascontiguousarray(r).tobytes()).hexdigest() for r in arr]
+
+
+def build_integrity_report(data_dir: Path, x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray, y_test: np.ndarray):
+    train_hash = set(_row_hashes(x_train))
+    test_hash = set(_row_hashes(x_test))
+    overlap = train_hash.intersection(test_hash)
+
+    report = {
+        "num_train_samples": int(x_train.shape[0]),
+        "num_test_samples": int(x_test.shape[0]),
+        "num_features": int(x_train.shape[1]),
+        "train_test_exact_overlap_count": int(len(overlap)),
+        "train_class_distribution": {int(i): int(c) for i, c in enumerate(np.bincount(y_train))},
+        "test_class_distribution": {int(i): int(c) for i, c in enumerate(np.bincount(y_test))},
+        "train_feature_mean_abs": float(np.mean(np.abs(x_train))),
+        "test_feature_mean_abs": float(np.mean(np.abs(x_test))),
+    }
+
+    train_sub = data_dir / "training_subject.csv"
+    test_sub = data_dir / "test_subject.csv"
+    if train_sub.exists() and test_sub.exists():
+        train_subjects = np.squeeze(pd.read_csv(train_sub, header=None).values).astype(np.int64)
+        test_subjects = np.squeeze(pd.read_csv(test_sub, header=None).values).astype(np.int64)
+        report["train_subjects"] = sorted(np.unique(train_subjects).tolist())
+        report["test_subjects"] = sorted(np.unique(test_subjects).tolist())
+        report["subject_overlap_count"] = int(len(set(report["train_subjects"]).intersection(set(report["test_subjects"]))))
+
+    return report
 
 
 def get_shape(data_dir: Path, feature_dim: int, n_channels_arg: int):
@@ -102,18 +157,33 @@ def build_adjacency(data_dir: Path, electrode_path: Path, x_train_shaped: np.nda
     return torch.tensor(adj, dtype=torch.float32), source
 
 
-def run_epoch(model, loader, criterion, optimizer, device):
+def get_class_weights(y_train: np.ndarray, n_classes: int):
+    counts = np.bincount(y_train, minlength=n_classes).astype(np.float32)
+    counts = np.maximum(counts, 1.0)
+    inv = counts.sum() / counts
+    weights = inv / inv.mean()
+    return weights.astype(np.float32)
+
+
+def run_epoch(model, loader, criterion, optimizer, device, augment_std: float, clip_grad: float):
     model.train()
     losses = []
     ys, preds = [], []
     for x, y in loader:
         x = x.to(device)
         y = y.to(device)
+
+        if augment_std > 0:
+            x = x + torch.randn_like(x) * augment_std
+
         optimizer.zero_grad()
         logits = model(x)
         loss = criterion(logits, y)
         loss.backward()
+        if clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
         optimizer.step()
+
         losses.append(loss.item())
         ys.extend(y.detach().cpu().numpy().tolist())
         preds.extend(torch.argmax(logits, dim=1).detach().cpu().numpy().tolist())
@@ -136,41 +206,124 @@ def evaluate(model, loader, criterion, device):
     return float(np.mean(losses)), accuracy_score(ys, preds), ys, preds
 
 
-def plot_history(history_df: pd.DataFrame, model_name: str, out_dir: Path):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].plot(history_df["epoch"], history_df["train_loss"], label="train")
-    axes[0].plot(history_df["epoch"], history_df["val_loss"], label="val")
-    axes[0].set_title("{} Loss".format(model_name))
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss")
-    axes[0].legend()
+@torch.no_grad()
+def collect_attention_matrix(model, loader, device):
+    if not hasattr(model, "get_last_attention"):
+        return None
 
-    axes[1].plot(history_df["epoch"], history_df["train_acc"], label="train")
-    axes[1].plot(history_df["epoch"], history_df["val_acc"], label="val")
-    axes[1].set_title("{} Accuracy".format(model_name))
+    model.eval()
+    matrices = []
+    for x, _ in loader:
+        x = x.to(device)
+        _ = model(x)
+        attn = model.get_last_attention()
+        if attn is not None:
+            matrices.append(attn.numpy())
+
+    if not matrices:
+        return None
+    return np.mean(matrices, axis=0)
+
+
+def plot_history(history_df: pd.DataFrame, model_name: str, out_dir: Path):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+
+    axes[0].plot(history_df["epoch"], history_df["train_loss"], label="train", linewidth=2)
+    axes[0].plot(history_df["epoch"], history_df["val_loss"], label="val", linewidth=2)
+    axes[0].set_title("{} loss".format(model_name))
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Cross-Entropy")
+    axes[0].legend(frameon=True)
+
+    axes[1].plot(history_df["epoch"], history_df["train_acc"], label="train", linewidth=2)
+    axes[1].plot(history_df["epoch"], history_df["val_acc"], label="val", linewidth=2)
+    axes[1].set_title("{} accuracy".format(model_name))
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Accuracy")
-    axes[1].legend()
+    axes[1].set_ylim(0, 1)
+    axes[1].legend(frameon=True)
 
     fig.tight_layout()
-    fig.savefig(out_dir / "{}_curves.png".format(model_name), dpi=160)
+    fig.savefig(out_dir / "{}_curve.png".format(model_name), dpi=320, bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_confusion(y_true, y_pred, model_name: str, out_dir: Path):
     cm = confusion_matrix(y_true, y_pred)
-    fig, ax = plt.subplots(figsize=(5, 4))
-    im = ax.imshow(cm, cmap="Blues")
-    plt.colorbar(im, ax=ax)
-    ax.set_title("{} Confusion Matrix".format(model_name))
+    cm_norm = cm.astype(np.float32) / np.clip(cm.sum(axis=1, keepdims=True), a_min=1, a_max=None)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    labels = np.array([["{}\n({:.1%})".format(cm[i, j], cm_norm[i, j]) for j in range(cm.shape[1])] for i in range(cm.shape[0])])
+    sns.heatmap(cm_norm, annot=labels, fmt="", cmap="Blues", cbar=True, square=True, ax=ax)
+    ax.set_title("{} confusion matrix".format(model_name))
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center", color="black")
     fig.tight_layout()
-    fig.savefig(out_dir / "{}_confusion_matrix.png".format(model_name), dpi=180)
+    fig.savefig(out_dir / "{}_cm.png".format(model_name), dpi=320, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_matrix(matrix: np.ndarray, title: str, save_path: Path):
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(matrix, cmap="viridis")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.ax.set_ylabel("Weight", rotation=270, labelpad=15)
+    ax.set_title(title)
+    ax.set_xlabel("Channel")
+    ax.set_ylabel("Channel")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=320, bbox_inches="tight")
+    plt.close(fig)
+
+
+def compute_metrics(y_true, y_pred):
+    return {
+        "test_acc": float(accuracy_score(y_true, y_pred)),
+        "test_bal_acc": float(balanced_accuracy_score(y_true, y_pred)),
+        "test_f1_macro": float(f1_score(y_true, y_pred, average="macro")),
+        "test_precision_macro": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
+        "test_recall_macro": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
+    }
+
+
+def create_model(
+    model_name: str,
+    n_channels: int,
+    n_times: int,
+    n_classes: int,
+    adjacency: torch.Tensor,
+    compact_gat_dropout: float,
+    compact_gat_dropedge: float,
+):
+    if model_name == "cnn":
+        return CNNBaseline(n_channels=n_channels, n_classes=n_classes)
+    if model_name == "cnn_lstm":
+        return CNNLSTMBaseline(n_channels=n_channels, n_classes=n_classes)
+    if model_name == "lstm":
+        return LSTMBaseline(n_channels=n_channels, n_classes=n_classes)
+    if model_name == "gcn_hybrid":
+        return HybridCNNLSTMGCN(n_channels=n_channels, n_times=n_times, n_classes=n_classes, adjacency=adjacency)
+    if model_name == "gat_hybrid":
+        return HybridCNNLSTMGAT(n_channels=n_channels, n_times=n_times, n_classes=n_classes, adjacency=adjacency)
+    if model_name == "compact_gat":
+        return CompactCNNGAT(
+            n_channels=n_channels,
+            n_times=n_times,
+            n_classes=n_classes,
+            adjacency=adjacency,
+            dropout=compact_gat_dropout,
+            dropedge=compact_gat_dropedge,
+        )
+    if model_name == "graph_enhanced_cnn":
+        return GraphEnhancedCNNGAT(
+            n_channels=n_channels,
+            n_times=n_times,
+            n_classes=n_classes,
+            adjacency=adjacency,
+            dropout=compact_gat_dropout,
+            dropedge=compact_gat_dropedge,
+        )
+    raise ValueError("Unsupported model: {}".format(model_name))
 
 
 def train_one_model(
@@ -182,27 +335,30 @@ def train_one_model(
     val_loader,
     test_loader,
     adjacency,
+    class_weights,
     device,
     epochs: int,
     lr: float,
     weight_decay: float,
     patience: int,
+    label_smoothing: float,
+    augment_std: float,
+    clip_grad: float,
+    compact_gat_dropout: float,
+    compact_gat_dropedge: float,
 ):
-    if model_name == "cnn":
-        model = CNNBaseline(n_channels=n_channels, n_classes=n_classes).to(device)
-    elif model_name == "lstm":
-        model = LSTMBaseline(n_channels=n_channels, n_classes=n_classes).to(device)
-    elif model_name == "hybrid":
-        model = HybridCNNLSTMGNN(
-            n_channels=n_channels,
-            n_times=n_times,
-            n_classes=n_classes,
-            adjacency=adjacency.to(device),
-        ).to(device)
-    else:
-        raise ValueError("Unsupported model: {}".format(model_name))
+    model = create_model(
+        model_name=model_name,
+        n_channels=n_channels,
+        n_times=n_times,
+        n_classes=n_classes,
+        adjacency=adjacency,
+        compact_gat_dropout=compact_gat_dropout,
+        compact_gat_dropedge=compact_gat_dropedge,
+    ).to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(weight=weight_tensor, label_smoothing=label_smoothing)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=max(2, patience // 3), verbose=False
@@ -214,7 +370,15 @@ def train_one_model(
     history_rows = []
 
     for epoch in range(1, epochs + 1):
-        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss, train_acc = run_epoch(
+            model=model,
+            loader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=device,
+            augment_std=augment_std,
+            clip_grad=clip_grad,
+        )
         val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, device)
         scheduler.step(val_acc)
 
@@ -246,41 +410,53 @@ def train_one_model(
             break
 
     model.load_state_dict(best_state)
-    test_loss, test_acc, y_true, y_pred = evaluate(model, test_loader, criterion, device)
-    test_f1 = f1_score(y_true, y_pred, average="macro")
+    test_loss, _, y_true, y_pred = evaluate(model, test_loader, criterion, device)
+    metrics = compute_metrics(y_true, y_pred)
+    metrics["test_loss"] = float(test_loss)
 
     history_df = pd.DataFrame(history_rows)
-    return model, history_df, best_val_acc, test_acc, test_f1, y_true, y_pred, test_loss
+    attention = collect_attention_matrix(model, test_loader, device)
+    return model, history_df, best_val_acc, metrics, y_true, y_pred, attention
 
 
 def parse_models(spec: str):
     if spec.strip().lower() == "all":
-        return ["cnn", "lstm", "hybrid"]
+        return ["cnn", "cnn_lstm", "lstm", "gcn_hybrid", "gat_hybrid", "compact_gat", "graph_enhanced_cnn"]
     return [x.strip().lower() for x in spec.split(",") if x.strip()]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train CNN/LSTM/Hybrid CNN+LSTM+GNN and compare results.")
+    parser = argparse.ArgumentParser(description="Train EEG CNN/LSTM/GCN/GAT models with paper-ready outputs.")
     parser.add_argument("--data-dir", default="data/processed/EEG-Motor-Movement-Imagery-Dataset")
     parser.add_argument(
         "--electrode-path",
-        default="../sources/EEG-DL-master/Download_Raw_EEG_Data/electrode_positions.txt",
+        default="assets/electrode_positions.txt",
         help="Electrode coordinates file from the referenced repos",
     )
     parser.add_argument("--results-dir", default="results")
-    parser.add_argument("--models", default="all", help="all or comma list: cnn,lstm,hybrid")
-    parser.add_argument("--epochs", type=int, default=35)
+    parser.add_argument(
+        "--models",
+        default="all",
+        help="all or comma list: cnn,cnn_lstm,lstm,gcn_hybrid,gat_hybrid,compact_gat,graph_enhanced_cnn",
+    )
+    parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--weight-decay", type=float, default=0.0001)
-    parser.add_argument("--patience", type=int, default=8)
-    parser.add_argument("--graph-k", type=int, default=10)
+    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--graph-k", type=int, default=12)
     parser.add_argument("--graph-sigma", type=float, default=0.55)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-channels", type=int, default=0, help="Only needed if dataset_meta.json is absent")
+    parser.add_argument("--label-smoothing", type=float, default=0.02)
+    parser.add_argument("--augment-std", type=float, default=0.01)
+    parser.add_argument("--clip-grad", type=float, default=1.0)
+    parser.add_argument("--compact-gat-dropout", type=float, default=0.45)
+    parser.add_argument("--compact-gat-dropedge", type=float, default=0.15)
     args = parser.parse_args()
 
+    set_plot_style()
     set_seed(args.seed)
 
     data_dir = Path(args.data_dir).resolve()
@@ -288,8 +464,15 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     x_train, y_train, x_test, y_test = load_csv_dataset(data_dir)
+    integrity_report = build_integrity_report(data_dir, x_train, y_train, x_test, y_test)
+    with (results_dir / "integrity_report.json").open("w", encoding="utf-8") as f:
+        json.dump(integrity_report, f, indent=2)
+    print("Integrity report saved: {}".format(results_dir / "integrity_report.json"))
+    print("Train/Test exact overlap count:", integrity_report["train_test_exact_overlap_count"])
+
     n_channels, n_times, meta = get_shape(data_dir, x_train.shape[1], args.n_channels)
     n_classes = int(max(np.max(y_train), np.max(y_test)) + 1)
+    class_weights = get_class_weights(y_train=y_train, n_classes=n_classes)
 
     split = StratifiedShuffleSplit(n_splits=1, test_size=args.val_size, random_state=args.seed)
     tr_idx, val_idx = next(split.split(x_train, y_train))
@@ -300,7 +483,9 @@ def main():
     val_ds = EEGDataset(x_val, y_val, n_channels=n_channels, n_times=n_times)
     test_ds = EEGDataset(x_test, y_test, n_channels=n_channels, n_times=n_times)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    dl_gen = torch.Generator()
+    dl_gen.manual_seed(args.seed)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, generator=dl_gen)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
@@ -313,22 +498,25 @@ def main():
         graph_k=args.graph_k,
         sigma=args.graph_sigma,
     )
-    np.save(results_dir / "adjacency_matrix.npy", adjacency.numpy())
+
+    adj_np = adjacency.numpy()
+    np.save(results_dir / "adjacency.npy", adj_np)
+    plot_matrix(adj_np, "Channel graph (normalized adjacency)", results_dir / "adjacency.png")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_names = parse_models(args.models)
 
     summary = []
+    best_attention = None
     for model_name in model_names:
         (
             model,
             history_df,
             best_val_acc,
-            test_acc,
-            test_f1,
+            metrics,
             y_true,
             y_pred,
-            test_loss,
+            attention,
         ) = train_one_model(
             model_name=model_name,
             n_channels=n_channels,
@@ -338,43 +526,56 @@ def main():
             val_loader=val_loader,
             test_loader=test_loader,
             adjacency=adjacency,
+            class_weights=class_weights,
             device=device,
             epochs=args.epochs,
             lr=args.lr,
             weight_decay=args.weight_decay,
             patience=args.patience,
+            label_smoothing=args.label_smoothing,
+            augment_std=args.augment_std,
+            clip_grad=args.clip_grad,
+            compact_gat_dropout=args.compact_gat_dropout,
+            compact_gat_dropedge=args.compact_gat_dropedge,
         )
 
-        history_path = results_dir / "{}_history.csv".format(model_name)
-        history_df.to_csv(history_path, index=False)
+        history_df.to_csv(results_dir / "{}_history.csv".format(model_name), index=False)
         torch.save(model.state_dict(), results_dir / "{}_best.pt".format(model_name))
         plot_history(history_df, model_name=model_name, out_dir=results_dir)
         plot_confusion(y_true, y_pred, model_name=model_name, out_dir=results_dir)
 
-        summary.append(
-            {
-                "model": model_name,
-                "best_val_acc": float(best_val_acc),
-                "test_acc": float(test_acc),
-                "test_f1_macro": float(test_f1),
-                "test_loss": float(test_loss),
-                "graph_source": graph_source if model_name == "hybrid" else "",
-            }
+        if attention is not None:
+            best_attention = attention
+            np.save(results_dir / "learned_adj.npy", attention)
+            plot_matrix(attention, "Learned adjacency (normalized)", results_dir / "learned_adj.png")
+
+        row = {
+            "model": model_name,
+            "best_val_acc": float(best_val_acc),
+            "graph_source": graph_source if (("hybrid" in model_name) or ("gat" in model_name) or ("graph_" in model_name)) else "",
+        }
+        row.update(metrics)
+        summary.append(row)
+
+        print(
+            "[{}] test_acc={:.4f} | bal_acc={:.4f} | f1={:.4f}".format(
+                model_name, metrics["test_acc"], metrics["test_bal_acc"], metrics["test_f1_macro"]
+            )
         )
-        print("[{}] Test accuracy={:.4f}, macro-F1={:.4f}".format(model_name, test_acc, test_f1))
 
     summary_df = pd.DataFrame(summary).sort_values(by="test_acc", ascending=False)
     summary_df.to_csv(results_dir / "summary.csv", index=False)
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.bar(summary_df["model"], summary_df["test_acc"], color=["#5B8FF9", "#61DDAA", "#F6BD16"][: len(summary_df)])
-    ax.set_ylim(0.0, 1.0)
-    ax.set_ylabel("Test Accuracy")
-    ax.set_title("Model Comparison")
-    for i, val in enumerate(summary_df["test_acc"]):
-        ax.text(i, val + 0.01, "{:.2%}".format(val), ha="center")
+    fig, ax = plt.subplots(figsize=(8, 4.8))
+    plot_df = summary_df.set_index("model")[["test_acc", "test_f1_macro"]]
+    plot_df.plot(kind="bar", ax=ax, width=0.75, color=["#2F5597", "#70AD47"])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Score")
+    ax.set_title("Model comparison")
+    ax.legend(loc="upper left", frameon=True)
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
-    fig.savefig(results_dir / "model_comparison.png", dpi=180)
+    fig.savefig(results_dir / "model_comparison.png", dpi=320, bbox_inches="tight")
     plt.close(fig)
 
     run_info = {
@@ -386,6 +587,7 @@ def main():
         "graph_source": graph_source,
         "models": model_names,
         "seed": args.seed,
+        "class_weights": class_weights.tolist(),
     }
     if meta:
         run_info["dataset_meta"] = meta
@@ -398,4 +600,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

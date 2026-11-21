@@ -1,5 +1,0 @@
-tensorflow>=1.13.0
-matplotlib
-scipy
-numpy
-pyEDFlib==0.1.11

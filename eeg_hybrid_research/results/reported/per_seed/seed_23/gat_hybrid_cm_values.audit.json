@@ -1,0 +1,13 @@
+{
+  "model": "gat_hybrid",
+  "confusion_matrix": [
+    [
+      2,
+      7
+    ],
+    [
+      3,
+      6
+    ]
+  ]
+}

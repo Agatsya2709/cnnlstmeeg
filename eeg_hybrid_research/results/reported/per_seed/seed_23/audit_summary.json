@@ -1,0 +1,15 @@
+{
+  "results_dir": "C:\\Users\\Hp\\OneDrive\\Documents\\New project\\eeg_hybrid_research\\results_clean_all_models_s12_ff_seed23",
+  "seed": 23,
+  "data_dir": "C:\\Users\\Hp\\OneDrive\\Documents\\New project\\eeg_hybrid_research\\data\\processed\\tune_s12_ff",
+  "integrity_overlap_count": 0,
+  "test_size": 18,
+  "test_class_counts": [
+    9,
+    9
+  ],
+  "notes": [
+    "Recomputed metrics are generated from saved checkpoints on the exact test split.",
+    "Validation statistics are reconstructed via the same StratifiedShuffleSplit seed and val_size."
+  ]
+}

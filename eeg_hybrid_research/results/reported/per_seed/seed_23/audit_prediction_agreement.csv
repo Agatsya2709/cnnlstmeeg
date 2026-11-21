@@ -1,0 +1,16 @@
+model_a,model_b,prediction_agreement
+cnn_lstm,gcn_hybrid,0.9444444444444444
+cnn_lstm,cnn,0.7222222222222222
+cnn_lstm,graph_enhanced_cnn,0.6666666666666666
+cnn,gcn_hybrid,0.6666666666666666
+gcn_hybrid,graph_enhanced_cnn,0.6111111111111112
+graph_enhanced_cnn,lstm,0.6111111111111112
+cnn,gat_hybrid,0.5555555555555556
+gcn_hybrid,gat_hybrid,0.5555555555555556
+cnn_lstm,gat_hybrid,0.5
+gcn_hybrid,lstm,0.4444444444444444
+gat_hybrid,lstm,0.4444444444444444
+cnn_lstm,lstm,0.3888888888888889
+cnn,graph_enhanced_cnn,0.3888888888888889
+cnn,lstm,0.3333333333333333
+graph_enhanced_cnn,gat_hybrid,0.2777777777777778

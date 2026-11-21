@@ -1,0 +1,13 @@
+{
+  "model": "graph_enhanced_cnn",
+  "confusion_matrix": [
+    [
+      9,
+      0
+    ],
+    [
+      9,
+      0
+    ]
+  ]
+}

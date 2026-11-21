@@ -1,0 +1,26 @@
+{
+  "task": "fists_feet",
+  "class_names": [
+    "both_fists",
+    "both_feet"
+  ],
+  "n_classes": 2,
+  "n_channels": 64,
+  "n_times": 128,
+  "num_samples_total": 90,
+  "num_samples_train": 72,
+  "num_samples_test": 18,
+  "subjects": [
+    1,
+    2
+  ],
+  "test_subjects": null,
+  "runs": [
+    4,
+    6,
+    8,
+    10,
+    12,
+    14
+  ]
+}

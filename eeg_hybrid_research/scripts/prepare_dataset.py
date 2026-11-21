@@ -32,6 +32,15 @@ def parse_runs(spec: str) -> List[int]:
     return [int(x.strip()) for x in spec.split(",") if x.strip()]
 
 
+def parse_optional_subjects(spec: str):
+    if spec is None:
+        return None
+    spec = spec.strip()
+    if not spec:
+        return None
+    return parse_subjects(spec)
+
+
 def parse_subject_run(path: Path) -> Tuple[int, int]:
     m = re.search(r"S(\d+)R(\d+)", path.stem.upper())
     if m is None:
@@ -96,7 +105,7 @@ def extract_epochs(
     tmax: float,
     timepoints: int,
 ):
-    run_id = parse_subject_run(file_path)[1]
+    subject_id, run_id = parse_subject_run(file_path)
     raw = mne.io.read_raw_edf(str(file_path), preload=True, verbose=False)
     raw.pick_types(eeg=True, exclude="bads")
     raw.filter(l_freq=l_freq, h_freq=h_freq, verbose=False)
@@ -105,7 +114,7 @@ def extract_epochs(
 
     keep_ids = [eid for eid, ann in inv.items() if mapper(run_id, ann) is not None]
     if not keep_ids:
-        return None, None, None
+        return None, None, None, None
 
     event_id_map = {inv[eid]: eid for eid in keep_ids}
     epochs = mne.Epochs(
@@ -119,7 +128,7 @@ def extract_epochs(
         verbose=False,
     )
     if len(epochs) == 0:
-        return None, None, None
+        return None, None, None, None
 
     x = epochs.get_data().astype(np.float32)
     x = resample(x, num=timepoints, axis=-1).astype(np.float32)
@@ -134,10 +143,11 @@ def extract_epochs(
 
     y = np.asarray(y, dtype=np.int64)
     if len(y) != x.shape[0]:
-        return None, None, None
+        return None, None, None, None
 
     ch_names = list(epochs.ch_names)
-    return x, y, ch_names
+    subjects = np.full(shape=(x.shape[0],), fill_value=subject_id, dtype=np.int64)
+    return x, y, ch_names, subjects
 
 
 def main():
@@ -153,6 +163,7 @@ def main():
     parser.add_argument("--l-freq", type=float, default=8.0)
     parser.add_argument("--h-freq", type=float, default=30.0)
     parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--test-subjects", type=str, default=None, help="Optional fixed test subjects, e.g. 9-10")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -161,6 +172,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     subjects = set(parse_subjects(args.subjects))
+    test_subjects = parse_optional_subjects(args.test_subjects)
+    test_subjects = set(test_subjects) if test_subjects else None
     runs = set(parse_runs(args.runs))
     mapper, class_names = build_mapper(args.task)
 
@@ -176,9 +189,10 @@ def main():
 
     x_parts = []
     y_parts = []
+    subject_parts = []
     ch_names = None
     for idx, fp in enumerate(selected, start=1):
-        x, y, current_ch_names = extract_epochs(
+        x, y, current_ch_names, sids = extract_epochs(
             file_path=fp,
             mapper=mapper,
             l_freq=args.l_freq,
@@ -195,6 +209,7 @@ def main():
             continue
         x_parts.append(x)
         y_parts.append(y)
+        subject_parts.append(sids)
         print("Processed {}/{}: {}".format(idx, len(selected), fp.name))
 
     if not x_parts:
@@ -202,11 +217,22 @@ def main():
 
     x_all = np.concatenate(x_parts, axis=0)
     y_all = np.concatenate(y_parts, axis=0)
+    subject_all = np.concatenate(subject_parts, axis=0)
 
-    splitter = StratifiedShuffleSplit(n_splits=1, test_size=args.test_size, random_state=args.seed)
-    train_idx, test_idx = next(splitter.split(x_all, y_all))
+    if test_subjects is not None:
+        test_mask = np.isin(subject_all, list(test_subjects))
+        train_mask = ~test_mask
+        train_idx = np.where(train_mask)[0]
+        test_idx = np.where(test_mask)[0]
+        if train_idx.size == 0 or test_idx.size == 0:
+            raise RuntimeError("Subject-wise split produced empty train or test set.")
+    else:
+        splitter = StratifiedShuffleSplit(n_splits=1, test_size=args.test_size, random_state=args.seed)
+        train_idx, test_idx = next(splitter.split(x_all, y_all))
+
     x_train, x_test = x_all[train_idx], x_all[test_idx]
     y_train, y_test = y_all[train_idx], y_all[test_idx]
+    subject_train, subject_test = subject_all[train_idx], subject_all[test_idx]
 
     scaler = StandardScaler()
     x_train_flat = x_train.reshape(x_train.shape[0], -1)
@@ -218,6 +244,8 @@ def main():
     np.savetxt(out_dir / "test_set.csv", x_test_flat, delimiter=",")
     np.savetxt(out_dir / "training_label.csv", y_train.reshape(-1, 1), delimiter=",", fmt="%d")
     np.savetxt(out_dir / "test_label.csv", y_test.reshape(-1, 1), delimiter=",", fmt="%d")
+    np.savetxt(out_dir / "training_subject.csv", subject_train.reshape(-1, 1), delimiter=",", fmt="%d")
+    np.savetxt(out_dir / "test_subject.csv", subject_test.reshape(-1, 1), delimiter=",", fmt="%d")
 
     np.savetxt(out_dir / "channel_names.csv", np.array(ch_names, dtype=object), delimiter=",", fmt="%s")
     np.save(out_dir / "scaler_mean.npy", scaler.mean_.astype(np.float32))
@@ -233,6 +261,7 @@ def main():
         "num_samples_train": int(x_train.shape[0]),
         "num_samples_test": int(x_test.shape[0]),
         "subjects": sorted(subjects),
+        "test_subjects": sorted(list(test_subjects)) if test_subjects is not None else None,
         "runs": sorted(runs),
     }
     with (out_dir / "dataset_meta.json").open("w", encoding="utf-8") as f:
@@ -245,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

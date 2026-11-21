@@ -1,8 +1,13 @@
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+def _canonical_name(name: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", name.upper())
 
 
 def load_electrode_positions(path: str) -> Dict[str, np.ndarray]:
@@ -19,7 +24,7 @@ def load_electrode_positions(path: str) -> Dict[str, np.ndarray]:
             parts = line.split()
             if len(parts) != 4:
                 continue
-            name = parts[0].upper()
+            name = _canonical_name(parts[0])
             coords = np.array([float(parts[1]), float(parts[2]), float(parts[3])], dtype=np.float32)
             positions[name] = coords
     return positions
@@ -28,7 +33,7 @@ def load_electrode_positions(path: str) -> Dict[str, np.ndarray]:
 def channels_to_positions(ch_names: List[str], pos_dict: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
     coords = []
     for ch in ch_names:
-        key = ch.upper()
+        key = _canonical_name(ch)
         if key not in pos_dict:
             return None
         coords.append(pos_dict[key])
@@ -78,4 +83,3 @@ def normalize_adjacency(adj: np.ndarray) -> np.ndarray:
     degree = np.clip(degree, a_min=1e-6, a_max=None)
     inv_sqrt = np.diag(1.0 / np.sqrt(degree))
     return (inv_sqrt @ adj @ inv_sqrt).astype(np.float32)
-

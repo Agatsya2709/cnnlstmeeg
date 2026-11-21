@@ -1,0 +1,47 @@
+{
+  "data_dir": "C:\\Users\\Hp\\OneDrive\\Documents\\New project\\eeg_hybrid_research\\data\\processed\\tune_s12_ff",
+  "results_dir": "results_clean_all_models_s12_ff_seed11",
+  "n_channels": 64,
+  "n_times": 128,
+  "n_classes": 2,
+  "graph_source": "electrode_positions",
+  "models": [
+    "cnn",
+    "lstm",
+    "cnn_lstm",
+    "gcn_hybrid",
+    "gat_hybrid",
+    "graph_enhanced_cnn"
+  ],
+  "seed": 11,
+  "class_weights": [
+    1.0,
+    1.0
+  ],
+  "dataset_meta": {
+    "task": "fists_feet",
+    "class_names": [
+      "both_fists",
+      "both_feet"
+    ],
+    "n_classes": 2,
+    "n_channels": 64,
+    "n_times": 128,
+    "num_samples_total": 90,
+    "num_samples_train": 72,
+    "num_samples_test": 18,
+    "subjects": [
+      1,
+      2
+    ],
+    "test_subjects": null,
+    "runs": [
+      4,
+      6,
+      8,
+      10,
+      12,
+      14
+    ]
+  }
+}
