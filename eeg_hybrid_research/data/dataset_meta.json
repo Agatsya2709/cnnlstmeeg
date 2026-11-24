@@ -16,11 +16,19 @@
   ],
   "test_subjects": null,
   "runs": [
-    4,
     6,
-    8,
     10,
-    12,
     14
-  ]
+  ],
+  "provenance_verification": {
+    "status": "verified_locally_from_source_edf",
+    "files": 6,
+    "trials_per_file": 15,
+    "total_trials": 90,
+    "class_counts_total": {
+      "both_fists": 45,
+      "both_feet": 45
+    },
+    "channel_order_consistent": true
+  }
 }

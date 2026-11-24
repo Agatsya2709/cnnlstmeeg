@@ -2,7 +2,7 @@
 
 ## Task and split
 
-The reported pilot experiment classifies fists-versus-feet motor imagery from EEGBCI runs 6, 10, and 14 for participants 1 and 2. Ninety selected trials were split once with a stratified random outer 80/20 train/test split (72/18 trials). The same outer split and each listed seed were used for all six models. Seeds 11, 23, and 37 were aggregated with the sample standard deviation (`ddof=1`).
+The reported pilot experiment classifies fists-versus-feet motor imagery from EEGBCI runs 6, 10, and 14 for participants 1 and 2. Local provenance verification confirmed six contributing EDF files, 15 selected trials per file, 90 trials in total, balanced 45/45 task labels, and an identical 64-channel order across recordings. The trials were split once with a stratified random outer 80/20 train/test split (72/18 trials). The same outer split and each listed seed were used for all six models. Seeds 11, 23, and 37 were aggregated with the sample standard deviation (`ddof=1`).
 
 This is not a subject-independent evaluation: both participants can occur in each outer partition. It should therefore be described as a within-cohort pilot benchmark, not as evidence of cross-subject clinical generalization.
 
