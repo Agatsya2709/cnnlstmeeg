@@ -26,6 +26,14 @@ The committed results are from a binary fists-versus-feet motor-imagery pilot ex
 
 The best observed model in this small pilot is the CNN baseline. These results do **not** establish that graph models outperform convolutional models. The GCN result is competitive but the sample is too small for a strong comparative claim.
 
+## Protocol Status And Corrected Follow-Up
+
+This repository preserves the audited **legacy protocol** behind the table above. Its scaler was fitted on all 72 outer-training trials before the seed-specific 80/20 internal train/validation split. The 18 outer-test trials were excluded from scaler fitting, but validation examples contributed to the training statistics. The result table is retained for auditability and is not presented as leakage-controlled model-selection evidence.
+
+The leakage-controlled follow-up is implemented separately in [singaleegstudy](https://github.com/Agatsya2709/singaleegstudy). That repository exports unscaled epochs, splits the outer-training data first, fits the scaler on the inner training fold only, and applies it to validation and test trials. Its seed-11 outputs are explicitly labelled preliminary until all predeclared seeds and graph ablations are complete.
+
+Run `py -3.7 scripts/verify_legacy_results.py` from `eeg_hybrid_research` to recompute the committed summary means and sample standard deviations from the per-seed source table.
+
 ## Repository layout
 
 ```text

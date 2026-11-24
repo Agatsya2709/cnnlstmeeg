@@ -2,6 +2,8 @@
 
 `results/reported/multiseed_summary.csv` is the canonical aggregate table. It summarizes three runs (seeds 11, 23, and 37) of the protocol described in `EXPERIMENT_PROTOCOL.md`.
 
+The means and sample standard deviations are mechanically verifiable from `results/reported/multiseed_raw.csv` with `py -3.7 scripts/verify_legacy_results.py`. These are legacy-protocol results: the outer test set was excluded from scaling, but the scaler was fitted before the internal validation split. Do not combine this table with the corrected follow-up outputs in `singaleegstudy`.
+
 | Model | Accuracy mean | Accuracy sample SD | Macro F1 mean | Balanced accuracy mean |
 | --- | ---: | ---: | ---: | ---: |
 | CNN | 0.8704 | 0.0849 | 0.8689 | 0.8704 |
